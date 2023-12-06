@@ -10,7 +10,7 @@ Below is the structure of the repository with a brief description of each compon
 - `data`: Directory containing datasets used in the experiments.
 - `falcon_lora.ipynb`: Jupyter Notebook for the Falcon LoRa experiment.
 - `gpt_finetune.ipynb`: Jupyter Notebook for fine-tuning GPT models.
-- `graphing`: Folder containing scripts and notebooks for graphing and visualizing data.
+- `graphing`: Folder containing scripts and notebooks for graphing and visualizing data with custom formatting.
 - `outputs`: Directory where output files from experiments are stored.
 - `peft.ipynb`: Jupyter Notebook for experimenting with PEFT (Performance-Efficient Fine-Tuning).
 - `prefix_tuning.ipynb`: Jupyter Notebook for prefix tuning experiments.
@@ -42,7 +42,7 @@ Each experiment is contained within its own Jupyter Notebook. To run an experime
 These notebooks were run on a set of 8GB GPUs and should take a couple of hours to execute completely. 
 
 ### Validating the Results
-After running the experiments, you can validate the results by comparing the generated graphs and outputs with those in the `outputs` directory. The graphs and output metrics should be comparable to ours with reasonable if the experiments are executed correctly. Given constraints we were unable to save weights.
+After running the experiments, you can validate the results by comparing the generated graphs and outputs with those in the `outputs` directory. The graphs and output metrics should be comparable to ours with reasonable accuracy if the experiments are executed correctly. We generally saved our data and and re-graphed them using the scripts in the `graphing` library, but this was purely for formatting purposes. Given constraints, we were unable to save weights.
 
 ## Support
 For any queries or issues, please contact us at rqchao@berkeley.edu, or any of the other listed authors.
