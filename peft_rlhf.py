@@ -15,6 +15,7 @@ from transformers import (
 
 from trl import AutoModelForCausalLMWithValueHead, PPOConfig, PPOTrainer, create_reference_model, set_seed
 from trl.core import LengthSampler
+from peft import LoraConfig
 
 
 tqdm.pandas()
@@ -84,12 +85,6 @@ def build_dataset(
 
     ds = load_dataset(dataset_name, split="train")
 
-    # def filter_fn(sample):
-    #     toxicity = sample["prompt"]["toxicity"]
-    #     return toxicity is not None and toxicity > 0.3
-
-    # ds = ds.filter(filter_fn, batched=False)
-
     input_size = LengthSampler(input_min_text_length, input_max_text_length)
 
     def tokenize(sample):
@@ -121,9 +116,22 @@ def collator(data):
 # set seed before initializing value head for deterministic eval
 set_seed(config.seed)
 
+# We then build the PEFT trainer
+lora_config = LoraConfig(
+    r=16,
+    lora_alpha=32,
+    lora_dropout=0.05,
+    bias="none",
+    task_type="CAUSAL_LM",
+)
+
 # Now let's build the model, the reference model, and the tokenizer. We first load the model
 # in bfloat16 to save memory using `transformers`.
-model = AutoModelForCausalLM.from_pretrained(config.model_name, torch_dtype=torch.bfloat16)
+model = pretrained_model = AutoModelForCausalLMWithValueHead.from_pretrained(
+    config.model_name, 
+    peft_config=lora_config,
+    load_in_4bit=True,
+)
 # And then we pass the loaded model to `AutoModelForCausalLMWithValueHead`.
 model = AutoModelForCausalLMWithValueHead.from_pretrained(model)
 
