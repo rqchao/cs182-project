@@ -1,3 +1,17 @@
+# coding=utf-8
+# Copyright 2023 The HuggingFace Inc. team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -9,17 +23,33 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     HfArgumentParser,
-    BertForSequenceClassification,
-    BertTokenizer,
-    BitsAndBytesConfig,
+    RobertaForSequenceClassification,
+    RobertaTokenizer,
 )
 
 from trl import AutoModelForCausalLMWithValueHead, PPOConfig, PPOTrainer, create_reference_model, set_seed
 from trl.core import LengthSampler
+
 from peft import LoraConfig
 
-
 tqdm.pandas()
+
+########################################################################
+# This is a fully working simple example to use trl with accelerate.
+#
+# This example fine-tunes a GPTJ model to generate less toxic contents
+# by using allenai/real-toxicity-prompts dataset. We use PPO
+#  (proximal policy optimization) to optimize the model.
+# in any of the following settings (with the same script):
+#   - single CPU or single GPU
+#   - multi GPUS (using PyTorch distributed mode)
+#   - multi GPUS (using DeepSpeed ZeRO-Offload stages 1 & 2)
+#   - fp16 (mixed-precision) or fp32 (normal precision)
+#
+# To run it in each of these various modes, first initialize the accelerate
+# configuration with `accelerate config`
+#
+########################################################################
 
 
 # We first define the configuration of the experiment, defining the model, the dataset,
@@ -35,7 +65,7 @@ class ScriptArguments:
 
     # NOTE: gpt2 models use Conv1D instead of Linear layers which are not yet supported in 8 bit mode
     # models like gpt-neo* models are more suitable.
-    model_name: Optional[str] = field(default="xzrderek/spongebob-llm", metadata={"help": "the model name"})
+    model_name: Optional[str] = field(default="ybelkada/gpt-j-6b-sharded-bf16", metadata={"help": "the model name"})
     log_with: Optional[str] = field(default=None, metadata={"help": "use 'wandb' to log with wandb"})
     learning_rate: Optional[float] = field(default=(1.47e-5) * 2, metadata={"help": "the learning rate"})
     mini_batch_size: Optional[int] = field(default=4, metadata={"help": "the PPO minibatch size"})
@@ -44,7 +74,7 @@ class ScriptArguments:
         default=1, metadata={"help": "the number of gradient accumulation steps"}
     )
     model_save_path: Optional[str] = field(
-        default="./spongebob-final",
+        default="./gpt-j-6B-detoxified-long-context-26-shl-1e4-final",
         metadata={"help": "the path to save the model"},
     )
 
@@ -67,7 +97,7 @@ config = PPOConfig(
 # from the `datasets` library. One should customize this function to train the model on
 # its own dataset.
 def build_dataset(
-    config, dataset_name="rqchao/spongebob", input_min_text_length=5, input_max_text_length=10
+    config, dataset_name="allenai/real-toxicity-prompts", input_min_text_length=5, input_max_text_length=10
 ):
     """
     Build dataset for training. This builds the dataset from `load_dataset`, one should
@@ -86,11 +116,17 @@ def build_dataset(
 
     ds = load_dataset(dataset_name, split="train")
 
+    def filter_fn(sample):
+        toxicity = sample["prompt"]["toxicity"]
+        return toxicity is not None and toxicity > 0.3
+
+    ds = ds.filter(filter_fn, batched=False)
+
     input_size = LengthSampler(input_min_text_length, input_max_text_length)
 
     def tokenize(sample):
-        prompt = sample["Non-SpongeBob Dialogue"]
-        continuation = sample["SpongeBob Response"]
+        prompt = sample["prompt"]["text"]
+        continuation = sample["continuation"]["text"]
 
         sample["input_ids"] = tokenizer.encode(prompt + continuation)[: input_size()]
         sample["query"] = tokenizer.decode(sample["input_ids"])
@@ -117,7 +153,10 @@ def collator(data):
 # set seed before initializing value head for deterministic eval
 set_seed(config.seed)
 
-# We then build the PEFT trainer
+# Now let's build the model, the reference model, and the tokenizer. We first load the model
+# in bfloat16 to save memory using `transformers`.
+model = AutoModelForCausalLM.from_pretrained(config.model_name, torch_dtype=torch.bfloat16, device_map="auto")
+# And then we pass the loaded model to `AutoModelForCausalLMWithValueHead`.
 lora_config = LoraConfig(
     r=16,
     lora_alpha=32,
@@ -126,25 +165,14 @@ lora_config = LoraConfig(
     task_type="CAUSAL_LM",
 )
 
-bnb_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_use_double_quant=True,
-    bnb_4bit_quant_type="nf4",
-    bnb_4bit_compute_dtype=torch.bfloat16
+model = AutoModelForCausalLMWithValueHead.from_pretrained(
+    config.model_name,
+    load_in_8bit=True,
+    device_map="auto",
+    peft_config=lora_config,
 )
-# Now let's build the model, the reference model, and the tokenizer. We first load the model
-# in bfloat16 to save memory using `transformers`.
-model = AutoModelForCausalLM.from_pretrained(
-    config.model_name, 
-    # peft_config=lora_config,
-    quantization_config=bnb_config,
-    load_in_4bit=True,
-)
-# And then we pass the loaded model to `AutoModelForCausalLMWithValueHead`.
-model = AutoModelForCausalLMWithValueHead.from_pretrained(model).to("cuda:0")
-
 # We create a reference model by sharing 20 layers
-ref_model = create_reference_model(model, num_shared_layers=20).to("cuda:0")
+ref_model = create_reference_model(model, num_shared_layers=20)
 
 # We make sure to use `Adam` optimizer on the model parameters that require gradients.
 optimizer = Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=config.learning_rate)
@@ -165,11 +193,12 @@ ppo_trainer = PPOTrainer(
     optimizer=optimizer,
 )
 
-# We then build the reward pipeline, we will use the personality model to compute the reward.
-# We first load the personality model and tokenizer.
-tokenizer = BertTokenizer.from_pretrained("Minej/bert-base-personality")
-# We load the personality model in fp16 to save memory.
-personality_model = BertForSequenceClassification.from_pretrained("Minej/bert-base-personality", torch_dtype="auto").to("cuda:0")
+# We then build the reward pipeline, we will use the toxicity model to compute the reward.
+# We first load the toxicity model and tokenizer.
+toxicity_model_id = "facebook/roberta-hate-speech-dynabench-r4-target"
+toxicity_tokenizer = RobertaTokenizer.from_pretrained(toxicity_model_id)
+# We load the toxicity model in fp16 to save memory.
+toxicity_model = RobertaForSequenceClassification.from_pretrained(toxicity_model_id, torch_dtype=torch.float16, device_map="auto")
 
 
 # We then define the arguments to pass to the `generate` function. These arguments
@@ -202,20 +231,19 @@ for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
 
     # Compute sentiment score # noqa
     texts = batch["response"]
-    inputs = tokenizer(texts, padding=True, truncation=True, return_tensors="pt").to("cuda:0")
-    # print(inputs)
-    logits = personality_model(**inputs).logits.float()
-    # reward extraversion and punish concientiousness
-    personality_labels = (logits[:, 0] - logits[:, 3]).tolist()
+    toxicity_inputs = toxicity_tokenizer(texts, padding=True, truncation=True, return_tensors="pt")
+    logits = toxicity_model(**toxicity_inputs).logits.float()
+    toxicity_labels = (logits[:, 0]).tolist()
 
-    rewards = [torch.tensor(output) for output in personality_labels]
+    rewards = [torch.tensor(output) for output in toxicity_labels]
 
     # Run PPO step
-    print(query_tensors, response_tensors, rewards)
     stats = ppo_trainer.step(query_tensors, response_tensors, rewards)
     ppo_trainer.log_stats(stats, batch, rewards)
 
+    print(rewards)
+
     # Save model every 100 epochs
-    if epoch % 100 == 0:
+    if epoch % 1 == 0:
         if ppo_trainer.accelerator.is_main_process:
             ppo_trainer.save_pretrained(model_save_path)
