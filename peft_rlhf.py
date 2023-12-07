@@ -11,6 +11,7 @@ from transformers import (
     HfArgumentParser,
     BertForSequenceClassification,
     BertTokenizer,
+    BitsAndBytesConfig,
 )
 
 from trl import AutoModelForCausalLMWithValueHead, PPOConfig, PPOTrainer, create_reference_model, set_seed
@@ -34,7 +35,7 @@ class ScriptArguments:
 
     # NOTE: gpt2 models use Conv1D instead of Linear layers which are not yet supported in 8 bit mode
     # models like gpt-neo* models are more suitable.
-    model_name: Optional[str] = field(default="ybelkada/gpt-j-6b-sharded-bf16", metadata={"help": "the model name"})
+    model_name: Optional[str] = field(default="xzrderek/spongebob-llm", metadata={"help": "the model name"})
     log_with: Optional[str] = field(default=None, metadata={"help": "use 'wandb' to log with wandb"})
     learning_rate: Optional[float] = field(default=(1.47e-5) * 2, metadata={"help": "the learning rate"})
     mini_batch_size: Optional[int] = field(default=4, metadata={"help": "the PPO minibatch size"})
@@ -43,7 +44,7 @@ class ScriptArguments:
         default=1, metadata={"help": "the number of gradient accumulation steps"}
     )
     model_save_path: Optional[str] = field(
-        default="./gpt-j-6B-detoxified-long-context-26-shl-1e4-final",
+        default="./spongebob-final",
         metadata={"help": "the path to save the model"},
     )
 
@@ -125,18 +126,25 @@ lora_config = LoraConfig(
     task_type="CAUSAL_LM",
 )
 
+bnb_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_use_double_quant=True,
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_compute_dtype=torch.bfloat16
+)
 # Now let's build the model, the reference model, and the tokenizer. We first load the model
 # in bfloat16 to save memory using `transformers`.
-model = pretrained_model = AutoModelForCausalLMWithValueHead.from_pretrained(
+model = AutoModelForCausalLM.from_pretrained(
     config.model_name, 
-    peft_config=lora_config,
+    # peft_config=lora_config,
+    quantization_config=bnb_config,
     load_in_4bit=True,
 )
 # And then we pass the loaded model to `AutoModelForCausalLMWithValueHead`.
-model = AutoModelForCausalLMWithValueHead.from_pretrained(model)
+model = AutoModelForCausalLMWithValueHead.from_pretrained(model).to("cuda:0")
 
 # We create a reference model by sharing 20 layers
-ref_model = create_reference_model(model, num_shared_layers=20)
+ref_model = create_reference_model(model, num_shared_layers=20).to("cuda:0")
 
 # We make sure to use `Adam` optimizer on the model parameters that require gradients.
 optimizer = Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=config.learning_rate)
@@ -161,9 +169,7 @@ ppo_trainer = PPOTrainer(
 # We first load the personality model and tokenizer.
 tokenizer = BertTokenizer.from_pretrained("Minej/bert-base-personality")
 # We load the personality model in fp16 to save memory.
-toxicity_model = BertForSequenceClassification.from_pretrained("Minej/bert-base-personality", torch_dtype=torch.int8).to(
-    ppo_trainer.accelerator.device
-)
+personality_model = BertForSequenceClassification.from_pretrained("Minej/bert-base-personality", torch_dtype="auto").to("cuda:0")
 
 
 # We then define the arguments to pass to the `generate` function. These arguments
@@ -196,16 +202,16 @@ for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
 
     # Compute sentiment score # noqa
     texts = batch["response"]
-    inputs = tokenizer(texts, padding=True, truncation=True, return_tensors="pt").to(
-        ppo_trainer.accelerator.device
-    )
-    logits = model(**inputs).logits.float()
+    inputs = tokenizer(texts, padding=True, truncation=True, return_tensors="pt").to("cuda:0")
+    # print(inputs)
+    logits = personality_model(**inputs).logits.float()
     # reward extraversion and punish concientiousness
-    toxicity_labels = (logits[:, 0]).tolist() - (logits[:, 3]).tolist()
+    personality_labels = (logits[:, 0] - logits[:, 3]).tolist()
 
-    rewards = [torch.tensor(output) for output in toxicity_labels]
+    rewards = [torch.tensor(output) for output in personality_labels]
 
     # Run PPO step
+    print(query_tensors, response_tensors, rewards)
     stats = ppo_trainer.step(query_tensors, response_tensors, rewards)
     ppo_trainer.log_stats(stats, batch, rewards)
 
