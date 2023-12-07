@@ -74,7 +74,7 @@ class ScriptArguments:
         default=1, metadata={"help": "the number of gradient accumulation steps"}
     )
     model_save_path: Optional[str] = field(
-        default="./gpt-j-6B-detoxified-long-context-26-shl-1e4-final",
+        default="./output",
         metadata={"help": "the path to save the model"},
     )
 
@@ -93,14 +93,11 @@ config = PPOConfig(
 )
 
 
-# Below is an example function to build the dataset. In our case, we use the IMDB dataset
-# from the `datasets` library. One should customize this function to train the model on
-# its own dataset.
 def build_dataset(
-    config, dataset_name="allenai/real-personality-prompts", input_min_text_length=5, input_max_text_length=10
+    config, dataset_name="rqchao/spongebob", input_min_text_length=5, input_max_text_length=10
 ):
     """
-    Build dataset for training. This builds the dataset from `load_dataset`, one should
+    Build dataset for spongebob training. This builds the dataset from `load_dataset`, one should
     customize this function to train the model on its own dataset.
 
     Args:
@@ -116,17 +113,11 @@ def build_dataset(
 
     ds = load_dataset(dataset_name, split="train")
 
-    def filter_fn(sample):
-        personality = sample["prompt"]["personality"]
-        return personality is not None and personality > 0.3
-
-    ds = ds.filter(filter_fn, batched=False)
-
     input_size = LengthSampler(input_min_text_length, input_max_text_length)
 
     def tokenize(sample):
-        prompt = sample["prompt"]["text"]
-        continuation = sample["continuation"]["text"]
+        prompt = sample["Non-SpongeBob Dialogue"]
+        continuation = sample["SpongeBob Response"]
 
         sample["input_ids"] = tokenizer.encode(prompt + continuation)[: input_size()]
         sample["query"] = tokenizer.decode(sample["input_ids"])
