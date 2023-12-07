@@ -38,7 +38,7 @@ tqdm.pandas()
 # This is a fully working simple example to use trl with accelerate.
 #
 # This example fine-tunes a GPTJ model to generate less toxic contents
-# by using allenai/real-toxicity-prompts dataset. We use PPO
+# by using allenai/real-personality-prompts dataset. We use PPO
 #  (proximal policy optimization) to optimize the model.
 # in any of the following settings (with the same script):
 #   - single CPU or single GPU
@@ -97,7 +97,7 @@ config = PPOConfig(
 # from the `datasets` library. One should customize this function to train the model on
 # its own dataset.
 def build_dataset(
-    config, dataset_name="allenai/real-toxicity-prompts", input_min_text_length=5, input_max_text_length=10
+    config, dataset_name="allenai/real-personality-prompts", input_min_text_length=5, input_max_text_length=10
 ):
     """
     Build dataset for training. This builds the dataset from `load_dataset`, one should
@@ -117,8 +117,8 @@ def build_dataset(
     ds = load_dataset(dataset_name, split="train")
 
     def filter_fn(sample):
-        toxicity = sample["prompt"]["toxicity"]
-        return toxicity is not None and toxicity > 0.3
+        personality = sample["prompt"]["personality"]
+        return personality is not None and personality > 0.3
 
     ds = ds.filter(filter_fn, batched=False)
 
@@ -193,12 +193,12 @@ ppo_trainer = PPOTrainer(
     optimizer=optimizer,
 )
 
-# We then build the reward pipeline, we will use the toxicity model to compute the reward.
-# We first load the toxicity model and tokenizer.
-toxicity_model_id = "facebook/roberta-hate-speech-dynabench-r4-target"
-toxicity_tokenizer = RobertaTokenizer.from_pretrained(toxicity_model_id)
-# We load the toxicity model in fp16 to save memory.
-toxicity_model = RobertaForSequenceClassification.from_pretrained(toxicity_model_id, torch_dtype=torch.float16, device_map="auto")
+# We then build the reward pipeline, we will use the personality model to compute the reward.
+# We first load the personality model and tokenizer.
+personality_model_id = "facebook/roberta-hate-speech-dynabench-r4-target"
+personality_tokenizer = RobertaTokenizer.from_pretrained(personality_model_id)
+# We load the personality model in fp16 to save memory.
+personality_model = RobertaForSequenceClassification.from_pretrained(personality_model_id, torch_dtype=torch.float16, device_map="auto")
 
 
 # We then define the arguments to pass to the `generate` function. These arguments
@@ -231,11 +231,11 @@ for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
 
     # Compute sentiment score # noqa
     texts = batch["response"]
-    toxicity_inputs = toxicity_tokenizer(texts, padding=True, truncation=True, return_tensors="pt")
-    logits = toxicity_model(**toxicity_inputs).logits.float()
-    toxicity_labels = (logits[:, 0]).tolist()
+    personality_inputs = personality_tokenizer(texts, padding=True, truncation=True, return_tensors="pt")
+    logits = personality_model(**personality_inputs).logits.float()
+    personality_labels = (logits[:, 0]).tolist()
 
-    rewards = [torch.tensor(output) for output in toxicity_labels]
+    rewards = [torch.tensor(output) for output in personality_labels]
 
     # Run PPO step
     stats = ppo_trainer.step(query_tensors, response_tensors, rewards)
